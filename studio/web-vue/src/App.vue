@@ -11,6 +11,7 @@ const pages=[
  ['overview','grid','设备总览','设备总览','相机画面、巡检任务与设备运行状态。',()=>import('./views/Overview.vue')],
  ['meter','meter','仪表检测','仪表检测','选择数字或指针仪表，获取图片后直接读数。',()=>import('./views/MeterDetection.vue')],
  ['safety','shield','安全防护','安全防护','本地安全帽识别与云端防护装备检查。',()=>import('./views/SafetyRecognition.vue')],
+ ['fire','alert','火情检测','火情检测','Astra 摄像头火焰实时检测与告警证据。',()=>import('./views/FireDetection.vue')],
  ['meter-settings','sliders','巡检设置','巡检设置','地图与设置同步预览，保存后生效，取消恢复已保存值。',()=>import('./views/MeterSettings.vue')],
  ['inspection','route','巡检进度','巡检进度','查看巡检读数、路线示意与起步用时。',()=>import('./views/Inspection.vue')],
  ['devices','chip','RVBench','RVBench','四个紧凑的状态宫格，统一查看设备资源。',()=>import('./views/RvBench.vue')],

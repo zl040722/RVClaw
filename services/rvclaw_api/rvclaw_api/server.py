@@ -56,6 +56,7 @@ else:
 from .meter_config import MAX_REFERENCE_IMAGE_SIZE, MeterConfigError, MeterConfigStore, meter_is_ready
 from .meter_trial import TrialError, run_trial, runtime_reading
 from . import rvbench_store
+from .fire_evidence import FireEvidenceStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -67,6 +68,9 @@ STUDIO_ROOT = Path(
 METER_TRIAL_ROOT = REPO_ROOT / "runs" / "meter-trials"
 METER_EVIDENCE_ROOT = REPO_ROOT / "runs" / "meter-uploads"
 METER_EVIDENCE_INDEX = METER_EVIDENCE_ROOT / "index.json"
+FIRE_EVIDENCE_STORE = FireEvidenceStore(
+    Path(os.getenv("RVCLAW_FIRE_EVIDENCE_ROOT", "/data/RVClaw/runs/fire-evidence"))
+)
 INSPECTION_PHOTO_ROOT = Path(
     os.getenv("RVCLAW_INSPECTION_PHOTO_ROOT", "/data/inspection_photos")
 )
@@ -208,6 +212,9 @@ def _empty_inference_metrics():
         "helmet": 0,
         "no_helmet": 0,
         "checking": 0,
+        "fire_count": 0,
+        "fire_alert": False,
+        "fire_checks": 0,
         "inference_ms": None,
         "inferences": 0,
         "ppe_ready": False,
@@ -266,6 +273,10 @@ class CameraStream:
         self._last_error = None
         self._stderr_lines = deque(maxlen=20)
         self._inference_metrics = _empty_inference_metrics()
+        self._fire_positive_checks = 0
+        self._fire_clear_checks = 0
+        self._fire_alert_active = False
+        self._fire_evidence_pending = False
         self._inference_active = False
         self._inference_error = None
         self._process = None
@@ -286,6 +297,10 @@ class CameraStream:
                 self._last_error = None
                 self._stderr_lines.clear()
                 self._inference_metrics = _empty_inference_metrics()
+                self._fire_positive_checks = 0
+                self._fire_clear_checks = 0
+                self._fire_alert_active = False
+                self._fire_evidence_pending = False
                 self._inference_active = False
                 self._inference_error = None
                 self._condition.notify_all()
@@ -520,8 +535,26 @@ class CameraStream:
                     metrics = json.loads(line.removeprefix("RVCLAW_METRICS "))
                     with self._condition:
                         self._inference_metrics.update(metrics)
+                        if (self.inference or {}).get("task") == "fire_detection":
+                            detections = max(0, int(metrics.get("detections") or 0))
+                            if detections:
+                                self._fire_positive_checks += 1
+                                self._fire_clear_checks = 0
+                                if not self._fire_alert_active and self._fire_positive_checks >= 3:
+                                    self._fire_alert_active = True
+                                    self._fire_evidence_pending = True
+                            else:
+                                self._fire_positive_checks = 0
+                                self._fire_clear_checks += 1
+                                if self._fire_clear_checks >= 3:
+                                    self._fire_alert_active = False
+                            self._inference_metrics.update({
+                                "fire_count": detections if self._fire_alert_active else 0,
+                                "fire_alert": self._fire_alert_active,
+                                "fire_checks": self._fire_positive_checks,
+                            })
                     continue
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
             with self._condition:
                 self._stderr_lines.append(line)
@@ -540,6 +573,7 @@ class CameraStream:
                 return
             frame = bytes(buffer[start : end + 2])
             del buffer[: end + 2]
+            fire_evidence = None
             with self._condition:
                 self._frame = frame
                 self._sequence += 1
@@ -547,6 +581,20 @@ class CameraStream:
                 self._frame_times.append(self._last_frame_at)
                 self._last_error = None
                 self._condition.notify_all()
+                if self._fire_evidence_pending:
+                    fire_evidence = {
+                        "camera_id": self.camera_id,
+                        "source": "camera",
+                        "fire_count": self._inference_metrics.get("fire_count", 0),
+                        "inference_ms": self._inference_metrics.get("inference_ms"),
+                    }
+                    self._fire_evidence_pending = False
+            if fire_evidence:
+                try:
+                    FIRE_EVIDENCE_STORE.save(frame, fire_evidence)
+                except OSError as error:
+                    with self._condition:
+                        self._stderr_lines.append(f"Fire evidence save failed: {error}")
 
 
 YOLOV8_BINARY = Path(
@@ -594,6 +642,15 @@ HARDHAT_CONFIG = Path(
         str(REPO_ROOT / "configs" / "thresholds" / "hardhat_yolov8.yaml"),
     )
 )
+FIRE_MODEL = Path(os.path.expanduser(
+    os.getenv("RVCLAW_FIRE_MODEL", "~/.cache/models/vision/yolov8/yolov8_fire.q.onnx")
+))
+FIRE_CONFIG = Path(os.getenv(
+    "RVCLAW_FIRE_CONFIG", str(REPO_ROOT / "configs" / "thresholds" / "fire_yolov8.yaml")
+))
+FIRE_LABELS = Path(os.getenv(
+    "RVCLAW_FIRE_LABELS", str(VISION_ROOT / "assets" / "labels" / "fire.txt")
+))
 ASTRA_DEVICE = "/dev/v4l/by-id/usb-Astra_Pro_HD_Camera_Astra_Pro_HD_Camera-video-index0"
 # Astra Pro's RGB (Red Green Blue) stream supports 1280x720 at 30 FPS (frames per second). Use
 # this only for the digital display crop; pointer and safety modes retain the
@@ -2522,6 +2579,27 @@ CAMERA_MODES = {
         },
         required_paths=[YOLOV8_BINARY, YOLOV8_MODEL, YOLOV8_CONFIG, ASTRA_DEVICE],
     ),
+    "astra_fire": CameraStream(
+        camera_id="astra",
+        name="Astra Pro RGB",
+        device=ASTRA_DEVICE,
+        width=640,
+        height=480,
+        fps=5,
+        stream_fps=5,
+        command=_detector_command(
+            ASTRA_DEVICE, 640, 480, 5, FIRE_CONFIG, FIRE_MODEL
+        ),
+        working_directory=str(VISION_ROOT),
+        inference={
+            "enabled": True,
+            "task": "fire_detection",
+            "model": "SpacemiT YOLOv8 Fire Detection",
+            "backend": "SpaceMITExecutionProvider",
+            "capture_profile": "Astra Pro RGB 640x480@5",
+        },
+        required_paths=[YOLOV8_BINARY, FIRE_MODEL, FIRE_CONFIG, FIRE_LABELS, ASTRA_DEVICE],
+    ),
     "astra_hardhat": CameraStream(
         camera_id="astra",
         name="Astra Pro RGB",
@@ -2659,6 +2737,10 @@ CAMERA_MODE_INFO = {
     "c70_general": {
         "label": "Astra 目标检测",
         "task": "general_detection",
+    },
+    "astra_fire": {
+        "label": "Astra 火情检测",
+        "task": "fire_detection",
     },
     "astra_hardhat": {
         "label": "Astra 安全帽检测",
@@ -2903,6 +2985,17 @@ class RVClawRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/cameras":
             self._write_json(CAMERA_CONTROLLER.status())
             return
+        if parsed.path == "/api/fire-evidence":
+            self._write_json({"records": FIRE_EVIDENCE_STORE.list_records()})
+            return
+        fire_image = re.fullmatch(r"/api/fire-evidence/([a-f0-9]{32})/image\.jpg", parsed.path)
+        if fire_image:
+            image = FIRE_EVIDENCE_STORE.read_image(fire_image[1])
+            if image is None:
+                self.send_error(404)
+            else:
+                self._write_bytes(image, "image/jpeg", cache_control="no-store")
+            return
         if parsed.path == "/api/camera-mode":
             self._write_json(CAMERA_CONTROLLER.status())
             return
@@ -3005,6 +3098,9 @@ class RVClawRequestHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/api/meter-image-read", "/api/meter/image-read", "/api/meter/paddleocr-read"}:
             self._read_uploaded_meter_image()
             return
+        if parsed.path == "/api/fire-image-detect":
+            self._detect_uploaded_fire_image()
+            return
         action = re.fullmatch(r"/api/meter-configurations/([A-Za-z0-9_-]+)/(test-read|stop)", decoded_path)
         if action:
             record = METER_STORE.get(action[1])
@@ -3078,6 +3174,13 @@ class RVClawRequestHandler(BaseHTTPRequestHandler):
     def _do_delete(self):
         parsed = urlparse(self.path)
         decoded_path = unquote(parsed.path)
+        fire_evidence = re.fullmatch(r"/api/fire-evidence/([a-f0-9]{32})", decoded_path)
+        if fire_evidence:
+            if not FIRE_EVIDENCE_STORE.delete(fire_evidence.group(1)):
+                self._write_json({"error": "火情记录不存在。"}, status=404)
+                return
+            self._write_json({"deleted": True})
+            return
         if rvbench_store.is_path(decoded_path):
             try:
                 self._write_json(rvbench_store.delete(REPO_ROOT, decoded_path))
@@ -3418,6 +3521,100 @@ class RVClawRequestHandler(BaseHTTPRequestHandler):
             self._write_json(evidence_result)
         except (MeterConfigError, ValueError, base64.binascii.Error) as error:
             self._write_json({"status": "invalid_request", "value": None, "reason": str(error)}, status=400)
+
+    def _detect_uploaded_fire_image(self):
+        """Run one uploaded photo through the same fire detector as live video."""
+        temporary_path = None
+        try:
+            payload = self._read_json_body(max_size=16 * 1024 * 1024)
+            encoded = payload.get("image")
+            if not isinstance(encoded, str) or not encoded:
+                raise ValueError("请先选择一张图片。")
+            try:
+                image_bytes = base64.b64decode(encoded.split(",", 1)[-1], validate=True)
+            except (ValueError, base64.binascii.Error) as error:
+                raise ValueError("图片内容无效，请重新选择。") from error
+            if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
+                raise ValueError("图片不能超过 10 MB。")
+
+            image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if image is None or image.size == 0:
+                raise ValueError("无法读取这张图片，请选择 JPEG、PNG 或 WebP 图片。")
+            height, width = image.shape[:2]
+            if width * height > 40_000_000:
+                raise ValueError("图片分辨率过大，请先缩小图片后重试。")
+            scale = min(1.0, 1280.0 / max(width, height))
+            if scale < 1.0:
+                width, height = max(1, round(width * scale)), max(1, round(height * scale))
+                image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+            encoded_jpg = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if not encoded_jpg[0]:
+                raise ValueError("图片编码失败，请换一张图片重试。")
+
+            required = [YOLOV8_BINARY, FIRE_CONFIG, FIRE_MODEL, FIRE_LABELS]
+            if any(not path.is_file() for path in required):
+                self._write_json({"error": "火情检测模型或推理程序不可用，请检查板端模型配置。"}, status=503)
+                return
+
+            camera_status = CAMERA_CONTROLLER.status()
+            camera = next(iter(camera_status.get("cameras", [])), {})
+            if camera_status.get("active_mode") != "astra_raw" and camera.get("online"):
+                self._write_json({"error": "实时相机检测正在运行，请先切回原始画面再测试上传图片。"}, status=409)
+                return
+
+            with tempfile.NamedTemporaryFile(prefix="rvclaw-fire-upload-", suffix=".jpg", delete=False) as temporary:
+                temporary.write(encoded_jpg[1].tobytes())
+                temporary_path = temporary.name
+
+            command = [
+                str(YOLOV8_BINARY), "--config", str(FIRE_CONFIG), "--model", str(FIRE_MODEL),
+                "--input-video", temporary_path, "--width", str(width), "--height", str(height),
+                "--fps", "1",
+            ]
+            started = time.monotonic()
+            try:
+                completed = subprocess.run(
+                    command, cwd=str(VISION_ROOT), capture_output=True, timeout=60, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                self._write_json({"error": "图片检测超时，请稍后重试。"}, status=504)
+                return
+            if completed.returncode != 0:
+                self._write_json({"error": "图片检测未能完成，请检查火情模型和推理服务。"}, status=503)
+                return
+
+            metrics = None
+            for line in completed.stderr.decode("utf-8", errors="replace").splitlines():
+                if line.startswith("RVCLAW_METRICS "):
+                    try:
+                        metrics = json.loads(line.removeprefix("RVCLAW_METRICS "))
+                    except json.JSONDecodeError:
+                        continue
+            start = completed.stdout.find(b"\xff\xd8")
+            end = completed.stdout.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+            if metrics is None or start < 0 or end < 0:
+                self._write_json({"error": "图片检测没有返回有效结果，请重试。"}, status=503)
+                return
+
+            detections = max(0, int(metrics.get("detections") or 0))
+            inference_ms = metrics.get("inference_ms")
+            if not isinstance(inference_ms, (int, float)) or not math.isfinite(inference_ms):
+                inference_ms = round((time.monotonic() - started) * 1000, 1)
+            annotated = completed.stdout[start:end + 2]
+            self._write_json({
+                "source": "upload",
+                "fire_count": detections,
+                "fire_alert": detections > 0,
+                "inference_ms": round(float(inference_ms), 1),
+                "annotated_image": "data:image/jpeg;base64," + base64.b64encode(annotated).decode("ascii"),
+            })
+        except ValueError as error:
+            self._write_json({"error": str(error)}, status=400)
+        except (OSError, RuntimeError) as error:
+            self._write_json({"error": "图片检测暂时不可用，请检查设备连接后重试。"}, status=503)
+        finally:
+            if temporary_path:
+                Path(temporary_path).unlink(missing_ok=True)
 
     def _save_meter_configuration(self):
         try:

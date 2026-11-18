@@ -1,0 +1,11 @@
+# Fire model configuration from model-zoo-vision/applications/fire_detection.
+model_path: ~/.cache/models/vision/yolov8/yolov8_fire.q.onnx
+label_file_path: assets/labels/fire.txt
+image_size: [640, 640]
+class: deploy.yolov8.YOLOv8Detector
+default_params:
+  conf_threshold: 0.65
+  iou_threshold: 0.45
+  num_threads: 4
+  providers:
+    - SpaceMITExecutionProvider

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rvclaw.local/contracts/fire_detection_evidence.schema.json",
+  "title": "RVClaw fire detection evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_id",
+    "created_at",
+    "image_url",
+    "camera_id",
+    "source",
+    "fire_count",
+    "inference_ms"
+  ],
+  "properties": {
+    "evidence_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "image_url": {"type": "string", "format": "uri-reference"},
+    "camera_id": {"type": "string", "const": "astra"},
+    "source": {"type": "string", "const": "camera"},
+    "fire_count": {"type": "integer", "minimum": 1},
+    "inference_ms": {"type": ["number", "null"], "minimum": 0}
+  }
+}
