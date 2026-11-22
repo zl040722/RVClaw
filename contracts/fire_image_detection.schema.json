@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rvclaw.local/contracts/fire_image_detection.schema.json",
+  "title": "RVClaw uploaded fire image detection",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^(data:image/(jpeg|png|webp);base64,)?[A-Za-z0-9+/]+={0,2}$",
+          "maxLength": 14000000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "fire_count", "fire_alert", "inference_ms", "annotated_image"],
+      "properties": {
+        "source": {"type": "string", "const": "upload"},
+        "fire_count": {"type": "integer", "minimum": 0},
+        "fire_alert": {"type": "boolean"},
+        "inference_ms": {"type": "number", "minimum": 0},
+        "annotated_image": {
+          "type": "string",
+          "pattern": "^data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}$",
+          "maxLength": 14000000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deleted"],
+      "properties": {
+        "deleted": {"type": "boolean", "const": true}
+      }
+    }
+  ]
+}

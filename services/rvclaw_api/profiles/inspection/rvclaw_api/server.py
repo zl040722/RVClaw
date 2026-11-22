@@ -56,6 +56,7 @@ else:
 from .meter_config import MAX_REFERENCE_IMAGE_SIZE, MeterConfigError, MeterConfigStore, meter_is_ready
 from .meter_trial import TrialError, run_trial, runtime_reading
 from . import rvbench_store
+from .fire_evidence import FireEvidenceStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -67,6 +68,9 @@ STUDIO_ROOT = Path(
 METER_TRIAL_ROOT = REPO_ROOT / "runs" / "meter-trials"
 METER_EVIDENCE_ROOT = REPO_ROOT / "runs" / "meter-uploads"
 METER_EVIDENCE_INDEX = METER_EVIDENCE_ROOT / "index.json"
+FIRE_EVIDENCE_STORE = FireEvidenceStore(
+    Path(os.getenv("RVCLAW_FIRE_EVIDENCE_ROOT", "/data/RVClaw/runs/fire-evidence"))
+)
 INSPECTION_PHOTO_ROOT = Path(
     os.getenv("RVCLAW_INSPECTION_PHOTO_ROOT", "/data/inspection_photos")
 )
@@ -208,6 +212,9 @@ def _empty_inference_metrics():
         "helmet": 0,
         "no_helmet": 0,
         "checking": 0,
+        "fire_count": 0,
+        "fire_alert": False,
+        "fire_checks": 0,
         "inference_ms": None,
         "inferences": 0,
         "ppe_ready": False,
@@ -266,6 +273,10 @@ class CameraStream:
         self._last_error = None
         self._stderr_lines = deque(maxlen=20)
         self._inference_metrics = _empty_inference_metrics()
+        self._fire_positive_checks = 0
+        self._fire_clear_checks = 0
+        self._fire_alert_active = False
+        self._fire_evidence_pending = False
         self._inference_active = False
         self._inference_error = None
         self._process = None
@@ -286,6 +297,10 @@ class CameraStream:
                 self._last_error = None
                 self._stderr_lines.clear()
                 self._inference_metrics = _empty_inference_metrics()
+                self._fire_positive_checks = 0
+                self._fire_clear_checks = 0
+                self._fire_alert_active = False
+                self._fire_evidence_pending = False
                 self._inference_active = False
                 self._inference_error = None
                 self._condition.notify_all()
@@ -509,8 +524,26 @@ class CameraStream:
                     metrics = json.loads(line.removeprefix("RVCLAW_METRICS "))
                     with self._condition:
                         self._inference_metrics.update(metrics)
+                        if (self.inference or {}).get("task") == "fire_detection":
+                            detections = max(0, int(metrics.get("detections") or 0))
+                            if detections:
+                                self._fire_positive_checks += 1
+                                self._fire_clear_checks = 0
+                                if not self._fire_alert_active and self._fire_positive_checks >= 3:
+                                    self._fire_alert_active = True
+                                    self._fire_evidence_pending = True
+                            else:
+                                self._fire_positive_checks = 0
+                                self._fire_clear_checks += 1
+                                if self._fire_clear_checks >= 3:
+                                    self._fire_alert_active = False
+                            self._inference_metrics.update({
+                                "fire_count": detections if self._fire_alert_active else 0,
+                                "fire_alert": self._fire_alert_active,
+                                "fire_checks": self._fire_positive_checks,
+                            })
                     continue
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
             with self._condition:
                 self._stderr_lines.append(line)
@@ -529,6 +562,7 @@ class CameraStream:
                 return
             frame = bytes(buffer[start : end + 2])
             del buffer[: end + 2]
+            fire_evidence = None
             with self._condition:
                 self._frame = frame
                 self._sequence += 1
@@ -536,6 +570,20 @@ class CameraStream:
                 self._frame_times.append(self._last_frame_at)
                 self._last_error = None
                 self._condition.notify_all()
+                if self._fire_evidence_pending:
+                    fire_evidence = {
+                        "camera_id": self.camera_id,
+                        "source": "camera",
+                        "fire_count": self._inference_metrics.get("fire_count", 0),
+                        "inference_ms": self._inference_metrics.get("inference_ms"),
+                    }
+                    self._fire_evidence_pending = False
+            if fire_evidence:
+                try:
+                    FIRE_EVIDENCE_STORE.save(frame, fire_evidence)
+                except OSError as error:
+                    with self._condition:
+                        self._stderr_lines.append(f"Fire evidence save failed: {error}")
 
 
 YOLOV8_BINARY = Path(
@@ -583,6 +631,15 @@ HARDHAT_CONFIG = Path(
         str(REPO_ROOT / "configs" / "thresholds" / "hardhat_yolov8.yaml"),
     )
 )
+FIRE_MODEL = Path(os.path.expanduser(
+    os.getenv("RVCLAW_FIRE_MODEL", "~/.cache/models/vision/yolov8/yolov8_fire.q.onnx")
+))
+FIRE_CONFIG = Path(os.getenv(
+    "RVCLAW_FIRE_CONFIG", str(REPO_ROOT / "configs" / "thresholds" / "fire_yolov8.yaml")
+))
+FIRE_LABELS = Path(os.getenv(
+    "RVCLAW_FIRE_LABELS", str(VISION_ROOT / "assets" / "labels" / "fire.txt")
+))
 ASTRA_DEVICE = "/dev/v4l/by-id/usb-Astra_Pro_HD_Camera_Astra_Pro_HD_Camera-video-index0"
 # Astra Pro's RGB (Red Green Blue) stream supports 1280x720 at 30 FPS (frames per second). Use
 # this only for the digital display crop; pointer and safety modes retain the
@@ -2511,6 +2568,27 @@ CAMERA_MODES = {
         },
         required_paths=[YOLOV8_BINARY, YOLOV8_MODEL, YOLOV8_CONFIG, ASTRA_DEVICE],
     ),
+    "astra_fire": CameraStream(
+        camera_id="astra",
+        name="Astra Pro RGB",
+        device=ASTRA_DEVICE,
+        width=640,
+        height=480,
+        fps=5,
+        stream_fps=5,
+        command=_detector_command(
+            ASTRA_DEVICE, 640, 480, 5, FIRE_CONFIG, FIRE_MODEL
+        ),
+        working_directory=str(VISION_ROOT),
+        inference={
+            "enabled": True,
+            "task": "fire_detection",
+            "model": "SpacemiT YOLOv8 Fire Detection",
+            "backend": "SpaceMITExecutionProvider",
+            "capture_profile": "Astra Pro RGB 640x480@5",
+        },
+        required_paths=[YOLOV8_BINARY, FIRE_MODEL, FIRE_CONFIG, FIRE_LABELS, ASTRA_DEVICE],
+    ),
     "astra_hardhat": CameraStream(
         camera_id="astra",
         name="Astra Pro RGB",
@@ -2648,6 +2726,10 @@ CAMERA_MODE_INFO = {
     "c70_general": {
         "label": "Astra 目标检测",
         "task": "general_detection",
+    },
+    "astra_fire": {
+        "label": "Astra 火情检测",
+        "task": "fire_detection",
     },
     "astra_hardhat": {
         "label": "Astra 安全帽检测",
@@ -2874,6 +2956,17 @@ class RVClawRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/cameras":
             self._write_json(CAMERA_CONTROLLER.status())
+            return
+        if parsed.path == "/api/fire-evidence":
+            self._write_json({"records": FIRE_EVIDENCE_STORE.list_records()})
+            return
+        fire_image = re.fullmatch(r"/api/fire-evidence/([a-f0-9]{32})/image\.jpg", parsed.path)
+        if fire_image:
+            image = FIRE_EVIDENCE_STORE.read_image(fire_image[1])
+            if image is None:
+                self.send_error(404)
+            else:
+                self._write_bytes(image, "image/jpeg", cache_control="no-store")
             return
         if parsed.path == "/api/camera-mode":
             self._write_json(CAMERA_CONTROLLER.status())

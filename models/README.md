@@ -7,6 +7,8 @@
 
 `k1-assets.json` 逐项记录路径、大小及 SHA256，`resource-bundles.json` 记录资源包本身的 SHA256。ASR 的 `tokens.txt` 是字表，不是访问凭据。
 
+火情检测额外使用 SpacemiT Vision 提供的 `yolov8_fire.q.onnx`，不包含在项目资源包或 Git 中。使用 K1 SDK 中的 `components/model_zoo/vision/applications/fire_detection/scripts/download_models.sh` 下载，目标路径为 `~/.cache/models/vision/yolov8/yolov8_fire.q.onnx`；部署前应检查文件非空并与官方模型仓库中的配置匹配。
+
 ```bash
 curl -fL --retry 3 -o /tmp/rvclaw-k1-assets.tar.gz \
   https://github.com/jxgxxx/RVClaw-K1/releases/download/k1-resources-20261106/assets.tar.gz

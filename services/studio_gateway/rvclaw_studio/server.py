@@ -35,9 +35,9 @@ from .safety import SafetyService, upload_image
 
 LOG = logging.getLogger('studio-gateway')
 UPLOAD_LIMIT = 16 * 1024 * 1024
-JSON_GETS = {'/api/cameras','/api/health','/api/meter-upload-records','/api/helmet-evidence'}
-VISION_POSTS = {'/api/camera-mode','/api/meter-image-read','/api/meter-current-read'}
-RECORD_IMAGE = re.compile(r'^/api/(meter-upload-records|helmet-evidence)/[a-f0-9]{32}/(image|crop|original)\.jpg$')
+JSON_GETS = {'/api/cameras','/api/health','/api/meter-upload-records','/api/helmet-evidence','/api/fire-evidence'}
+VISION_POSTS = {'/api/camera-mode','/api/meter-image-read','/api/meter-current-read','/api/fire-image-detect'}
+RECORD_IMAGE = re.compile(r'^/api/(meter-upload-records|helmet-evidence|fire-evidence)/[a-f0-9]{32}/(image|crop|original)\.jpg$')
 TRIAL_IMAGE = re.compile(r'^/api/meter-trials/[a-f0-9]{32}/scene\.jpg$')
 
 
@@ -317,6 +317,19 @@ def handler(app):
             except Exception:
                 LOG.exception('POST failed for %s',path)
                 return self.reply(503,{'error':'操作未能完成，请检查设备连接后重试。'})
+
+        def do_DELETE(self):
+            path=urlsplit(self.path).path
+            if self.headers.get('Origin') not in app.origins:
+                self.close_connection=True;return self.reply(403,{'error':'请求来源不受支持。'})
+            if not re.fullmatch(r'/api/fire-evidence/[a-f0-9]{32}',path):
+                return self.reply(404,{'error':'操作不存在。'})
+            try:
+                return self.proxy()
+            except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError,socket.timeout):pass
+            except Exception:
+                LOG.exception('DELETE failed for %s',path)
+                return self.reply(503,{'error':'删除未能完成，请检查设备连接后重试。'})
 
     return Handler
 

@@ -218,6 +218,11 @@
       "mode": 436
     },
     {
+      "source": "services/rvclaw_api/rvclaw_api/fire_evidence.py",
+      "destination": "rvclaw_api/fire_evidence.py",
+      "mode": 436
+    },
+    {
       "source": "services/rvclaw_api/rvclaw_api/vision_state.py",
       "destination": "rvclaw_api/vision_state.py",
       "mode": 436
@@ -231,6 +236,14 @@
     {
       "source": "contracts/device_status.schema.json",
       "destination": "contracts/device_status.schema.json"
+    },
+    {
+      "source": "contracts/fire_detection_evidence.schema.json",
+      "destination": "contracts/fire_detection_evidence.schema.json"
+    },
+    {
+      "source": "contracts/fire_image_detection.schema.json",
+      "destination": "contracts/fire_image_detection.schema.json"
     },
     {
       "source": "contracts/profiles/inspection/inspection_result.schema.json",

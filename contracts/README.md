@@ -9,3 +9,5 @@
 1. 任务状态
 2. 设备与传感器状态
 3. 巡检识别结果
+
+火情告警证据记录遵循 `fire_detection_evidence.schema.json`；实时状态通过相机接口中的 `inference.fire_alert`、`inference.fire_count` 和 `inference.fire_checks` 提供。

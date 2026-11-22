@@ -35,7 +35,7 @@
       "source": "services/rvclaw_api/rvclaw_api/server.py",
       "target": "vision/services/rvclaw_api/rvclaw_api/server.py",
       "mode": 436,
-      "sha256": "cc92983a69508c133c50d9191245a703fce8954e6619f150131a8d8f585fdff9"
+      "sha256": "3b472db7a3a989391f32561920c56298dafd064791340e069453555d17c84a94"
     },
     {
       "source": "services/rvclaw_api/rvclaw_api/vision_state.py",
